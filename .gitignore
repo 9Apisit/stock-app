@@ -1,0 +1,17 @@
+# Python / Streamlit
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# Local DB / data
+portfolio.db
+*.db
+*.sqlite
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Streamlit secrets (ถ้าใช้)
+.streamlit/secrets.toml
