@@ -1,60 +1,89 @@
-# pages/2_Portfolio_Dashboard.py
+# pages/2_Portfolio_Dashboard.py  — หน้า 2: Portfolio Dashboard
 import streamlit as st
 import pandas as pd
 import plotly.express as px
-import yfinance as yf
-from db_utils import init_db, read_all_portfolios, ensure_portfolio, read_trades_df, read_symbols_for_portfolio, average_cost_position, load_prices_df, upsert_prices
+from db_utils import (
+    init_db, ensure_portfolio, read_symbols_for_portfolio, read_trades_df,
+    average_cost_position, load_prices_df, compute_equity_curve,
+    compute_nav_now, compute_growth_vs_initial
+)
 
 st.set_page_config(page_title="Portfolio Dashboard", layout="wide")
-st.title("หน้า 2 — Portfolio Dashboard")
+st.title("Portfolio Dashboard")
 
+# --------- Sidebar ---------
+portfolio_key = st.sidebar.text_input("Portfolio Name", "portfolio1")
 init_db()
-pf_list = read_all_portfolios()
-if pf_list.empty:
-    st.info("ยังไม่มีพอร์ตในระบบ")
-    st.stop()
-
-portfolio_key = st.sidebar.selectbox("เลือก Portfolio", options=pf_list["name"].tolist(), index=0)
 pf_id = ensure_portfolio(portfolio_key)
 
-trades = read_trades_df(pf_id)
-if trades.empty:
-    st.info("พอร์ตนี้ยังไม่มีธุรกรรม")
-    st.stop()
+# --------- Hero metrics ---------
+snap = compute_nav_now(pf_id)
+growth = compute_growth_vs_initial(pf_id)
+
+c1, c2, c3, c4, c5 = st.columns(5)
+if growth["growth_pct"] is None:
+    c1.metric("โตขึ้น (เทียบก้อนแรก)", "—")
+else:
+    c1.metric("โตขึ้น (เทียบก้อนแรก)", f"{growth['growth_pct']:.2f}%")
+c2.metric("NAV ปัจจุบัน", f"{snap['nav_now']:,.2f}")
+c3.metric("เงินสด (Cash)", f"{snap['cash_now']:,.2f}")
+c4.metric("Realized P&L", f"{snap['realized_pnl']:,.2f}")
+c5.metric("Unrealized P&L", f"{snap['unrealized_pnl']:,.2f}")
+
+st.caption(
+    "คำอธิบาย: โตขึ้น% คำนวณจาก NAV ปัจจุบันเทียบเงินฝากครั้งแรก (Initial Deposit). "
+    "สำหรับกรณีมีเงินฝาก/ถอนเพิ่มเติมภายหลัง ค่าดังกล่าวไม่ได้ปรับแบบ TWR/MWR (เวอร์ชันแรก)"
+)
+
+# --------- Equity Curve ---------
+st.subheader("📈 Equity Curve (ตั้งแต่เงินฝากครั้งแรก)")
+curve = compute_equity_curve(pf_id)
+if curve is None or curve.empty:
+    st.info("ยังไม่มีข้อมูลพอสำหรับคำนวณเส้นเติบโต (ฝากเงิน/บันทึกธุรกรรม และบันทึกราคาในหน้า 1)")
+else:
+    curve_reset = curve.reset_index().rename(columns={"index": "Date"}) if "index" in curve.reset_index().columns else curve.reset_index()
+    fig_nav = px.line(curve_reset, x=curve_reset.columns[0], y=["NAV", "Cash", "MV"], title="NAV / Cash / MV")
+    st.plotly_chart(fig_nav, use_container_width=True)
+    st.dataframe(curve.tail(10))
+
+# --------- Allocation Pie + Holdings ---------
+st.subheader("🧩 สัดส่วนพอร์ต (Allocation) และรายการถือครอง (Holdings)")
 
 symbols = read_symbols_for_portfolio(pf_id)
-rows = []
+alloc_rows = []
+hold_rows = []
+
 for sym in symbols:
-    t_df = trades[trades["symbol"] == sym].copy()
-    qty, avg_cost, realized = average_cost_position(t_df)
-    if qty <= 0:
+    tdf = read_trades_df(pf_id, sym)
+    qty, avg_cost, realized = average_cost_position(tdf)
+    if qty == 0 and tdf.empty:
         continue
-    prices = load_prices_df(sym)
-    last_price = None
-    if not prices.empty:
-        last_price = float(prices["Close"].iloc[-1])
-    if last_price is None:
-        try:
-            latest = yf.Ticker(sym).history(period="5d", auto_adjust=True)
-            latest.columns = [str(c).title() for c in latest.columns]
-            if not latest.empty:
-                last_price = float(latest["Close"].iloc[-1])
-                upsert_prices(sym, latest.reset_index()[["Date", "Close"]])
-        except Exception:
-            pass
-    if last_price is None:
-        last_price = avg_cost
-    market_value = qty * last_price
-    unreal = (last_price - avg_cost) * qty
-    rows.append({"Symbol": sym, "Qty": qty, "AvgCost": avg_cost, "Last": last_price, "MarketValue": market_value, "UnrealizedPnL": unreal, "RealizedPnL": realized})
+    px_df = load_prices_df(sym)
+    last = float(px_df["Close"].iloc[-1]) if not px_df.empty else avg_cost
+    mv = qty * last
+    unrl = (last - avg_cost) * qty
+    if qty != 0:
+        alloc_rows.append({"Symbol": sym, "MarketValue": mv})
+    hold_rows.append({
+        "Symbol": sym,
+        "Qty": qty,
+        "AvgCost": avg_cost,
+        "Last": last,
+        "MarketValue": mv,
+        "UnrealizedPnL": unrl,
+        "RealizedPnL": realized
+    })
 
-summary = pd.DataFrame(rows).sort_values("MarketValue", ascending=False)
-if summary.empty:
-    st.info("ไม่มีสถานะคงเหลือ")
-    st.stop()
+alloc_df = pd.DataFrame(alloc_rows)
+hold_df = pd.DataFrame(hold_rows)
 
-fig = px.pie(summary, names="Symbol", values="MarketValue", title="Portfolio Allocation")
-st.plotly_chart(fig, use_container_width=True)
+col1, col2 = st.columns([1, 2])
+with col1:
+    if alloc_df.empty or alloc_df["MarketValue"].sum() == 0:
+        st.info("ยังไม่มีสถานะคงเหลือสำหรับวาด Pie")
+    else:
+        fig_pie = px.pie(alloc_df, names="Symbol", values="MarketValue", title="Portfolio Allocation (MV)")
+        st.plotly_chart(fig_pie, use_container_width=True)
 
-st.subheader("สรุปสถานะ")
-st.dataframe(summary)
+with col2:
+    st.dataframe(hold_df.sort_values("MarketValue", ascending=False), use_container_width=True)
