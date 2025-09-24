@@ -59,7 +59,7 @@ This project applies fundamental **ETL (Extract–Transform–Load)** principles
 ```
 stock-app/
 │
-├── .py                   # Streamlit main app (Stock Viewer + Transactions)
+├── Stock & Transactions.py                   # Streamlit main app (Stock Viewer + Transactions)
 ├── pages/
 │   ├── Portfolio_Dashboard.py  # Page 2: Portfolio overview & visualization
 │   ├── Analysis_ML_Insights.py # Page 3: ML-based forecasting
