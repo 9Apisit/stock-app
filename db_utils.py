@@ -147,10 +147,37 @@ def get_current_qty(pf_id: int, symbol: str) -> int:
     return int(row[0] if row and row[0] is not None else 0)
 
 def safe_add_trade(pf_id: int, symbol: str, ts: str, side: str, qty: int, price: float, fee: float = 0.0) -> str:
+    """
+    ตรวจสอบก่อนบันทึกธุรกรรม:
+      - SELL: ต้องมีของพอขาย
+      - BUY : ต้องมีเงินสด (Cash Balance) พอจ่าย = qty*price + fee
+    ผ่านแล้วจึง add_trade(...)
+    """
+    symbol = symbol.strip().upper()
+    qty = int(qty)
+    price = float(price)
+    fee = float(fee)
+
     if side == "SELL":
         on_hand = get_current_qty(pf_id, symbol)
         if qty > on_hand:
             return f"❌ ขายเกินจำนวนที่ถืออยู่ (ถืออยู่ {on_hand}, จะขาย {qty})"
+
+    elif side == "BUY":
+        # ดึงเงินสดปัจจุบัน (รวมผลจาก cash ledger และเทรดที่มีอยู่แล้ว)
+        try:
+            cash = compute_cash_balance(pf_id)
+        except NameError:
+            # เผื่อโปรเจกต์คุณยังไม่มี compute_cash_balance ให้ดึงจาก cash_series แทน
+            cash_series = compute_cash_series(pf_id)
+            cash = float(cash_series.iloc[-1]) if cash_series is not None and not cash_series.empty else 0.0
+
+        need = qty * price + fee
+        # เผื่อ floating error เล็กน้อย
+        if need > cash + 1e-6:
+            return f"❌ เงินสดไม่พอ ซื้อ {symbol} ต้องใช้ {need:,.2f} แต่มี {cash:,.2f} (ฝากเงินเพิ่ม หรือขายสินทรัพย์ก่อน)"
+
+    # ผ่านเงื่อนไข → บันทึกธุรกรรม
     add_trade(pf_id, symbol, ts, side, qty, price, fee)
     return "✅ บันทึกธุรกรรมแล้ว"
 
