@@ -36,7 +36,7 @@ from typing import Optional
 
 # ---------------- Page config ----------------
 st.set_page_config(page_title="Analysis & ML Insights", layout="wide")
-st.title("📊 Analysis & Matchine Learning Insights")
+st.title("📊 Analysis & Machine Learning Insights")
 
 # ---------------- Sidebar: เลือกพอร์ต/สัญลักษณ์ ----------------
 with st.sidebar:
@@ -46,10 +46,10 @@ with st.sidebar:
     pf_id = ensure_portfolio(portfolio_key)
 
     st.divider()
-    st.caption("ดึงราคาจาก yfinance เมื่อ DB ไม่มีข้อมูล เพื่องานเดโม/ทดลอง")
+    st.caption("เลือกช่วงเวลา")
     default_start = date.today() - timedelta(days=365)
-    start = st.date_input("Start (fetch)", default_start, help="วันที่เริ่มต้นดึงข้อมูลจากแหล่งนอกถ้าใน DB ว่าง")
-    end = st.date_input("End (fetch)", date.today(), help="วันที่สิ้นสุดในการดึงข้อมูล")
+    start = st.date_input("Start", default_start, help="")
+    end = st.date_input("End", date.today(), help="")
 
 # ---------------- Helper: ดึงราคาแบบยืดหยุ่น ----------------
 @st.cache_data(show_spinner=False)
