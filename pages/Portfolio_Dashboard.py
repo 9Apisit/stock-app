@@ -34,17 +34,168 @@ st.caption(
     "คำอธิบาย: โตขึ้น% คำนวณจาก NAV ปัจจุบันเทียบเงินฝากครั้งแรก (Initial Deposit). "
     "สำหรับกรณีมีเงินฝาก/ถอนเพิ่มเติมภายหลัง ค่าดังกล่าวไม่ได้ปรับแบบ TWR/MWR (เวอร์ชันแรก)"
 )
+# # ========= HERO PREVIEW (no inputs, no DB) =========
+# import numpy as np
+# import pandas as pd
+# import plotly.graph_objects as go
+# from plotly.subplots import make_subplots
+
+# np.random.seed(7)  # ทำให้ภาพคงที่ทุกครั้ง
+
+# # 1) กำหนดพารามิเตอร์สมมติ (ปรับให้ภาพสวย/ดูดี)
+# init_cap = 250_000                 # เงินตั้งต้น
+# equity_ratio = 72                  # สัดส่วนถือหุ้น (%)
+# exp_annual_ret = 14                # คาดหวังผลตอบแทนต่อปี (%)
+# annual_vol = 18                    # ความผันผวนต่อปี (%)
+# start = pd.to_datetime("2025-01-01")
+# end   = pd.to_datetime("2025-06-30")
+
+# # 2) สร้างวันทำการ + ผลตอบแทนรายวัน
+# bdays = pd.bdate_range(start, end)
+# n = len(bdays)
+# mu_d = (exp_annual_ret / 100) / 252.0
+# sigma_d = (annual_vol / 100) / np.sqrt(252.0)
+# daily_ret = np.random.normal(mu_d, sigma_d, n)
+
+# # 3) สร้าง “เงินฝาก/ถอน” เล็กน้อยให้ภาพดูมีชีวิต (ไม่กระทบข้อมูลจริง)
+# flows = np.zeros(n)
+# if n > 40:
+#     # เติมสัก 4 จุดแบบสุ่ม ±0.5–2.5% ของเงินตั้งต้น
+#     for i in np.linspace(10, n-10, 4, dtype=int):
+#         flows[i] = np.random.choice([1, -1]) * np.random.uniform(0.005, 0.025) * init_cap
+# cumulative_flows = np.cumsum(flows)
+
+# # 4) คำนวณ NAV / Cash / MV + Growth(%)
+# growth_factor = np.cumprod(1.0 + daily_ret)
+# NAV = init_cap * growth_factor + cumulative_flows
+# MV  = NAV * (equity_ratio / 100.0)
+# Cash = NAV - MV
+# initial_capital = float(NAV[0])
+# GrowthPct = (NAV / initial_capital - 1.0) * 100.0
+
+# df_show = pd.DataFrame(
+#     {"NAV": NAV, "Cash": Cash, "MV": MV, "GrowthPct": GrowthPct},
+#     index=bdays
+# )
+
+# # 5) พล็อตกราฟสวย ๆ แกนคู่
+# fig_hero = make_subplots(specs=[[{"secondary_y": True}]])
+# for c in ["NAV", "Cash", "MV"]:
+#     fig_hero.add_trace(
+#         go.Scatter(x=df_show.index, y=df_show[c], mode="lines", name=c),
+#         secondary_y=False
+#     )
+# fig_hero.add_trace(
+#     go.Scatter(
+#         x=df_show.index, y=df_show["GrowthPct"], mode="lines",
+#         name="Growth (%)", line=dict(dash="dash")
+#     ),
+#     secondary_y=True
+# )
+
+# fig_hero.update_layout(
+#     title="Sample Portfolio • NAV / Cash / MV + Growth (%)",
+#     template="plotly_white",
+#     hovermode="x unified",
+#     margin=dict(l=40, r=40, t=60, b=40),
+#     legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+# )
+# fig_hero.update_xaxes(title_text="Date")
+# fig_hero.update_yaxes(title_text="Value (฿)", secondary_y=False)
+# fig_hero.update_yaxes(title_text="Growth (%)", secondary_y=True)
+
+# st.plotly_chart(fig_hero, use_container_width=True)
+
+# with st.expander("ตัวอย่างข้อมูลที่ใช้แสดงผล (ท้าย 10 แถว)"):
+#     st.dataframe(df_show.tail(10))
+# # ========= END HERO PREVIEW =========
+
 
 # --------- Equity Curve ---------
 st.subheader("📈 Equity Curve (ตั้งแต่เงินฝากครั้งแรก)")
 curve = compute_equity_curve(pf_id)
+
 if curve is None or curve.empty:
     st.info("ยังไม่มีข้อมูลพอสำหรับคำนวณเส้นเติบโต (ฝากเงิน/บันทึกธุรกรรม และบันทึกราคาในหน้า 1)")
 else:
-    curve_reset = curve.reset_index().rename(columns={"index": "Date"}) if "index" in curve.reset_index().columns else curve.reset_index()
-    fig_nav = px.line(curve_reset, x=curve_reset.columns[0], y=["NAV", "Cash", "MV"], title="NAV / Cash / MV")
-    st.plotly_chart(fig_nav, use_container_width=True)
-    st.dataframe(curve.tail(10))
+    # ทำ index ให้เป็น datetime และ reset ให้มีคอลัมน์ Date ชัดเจน
+    curve_idx = curve.copy()
+    try:
+        curve_idx.index = pd.to_datetime(curve_idx.index, errors="coerce")
+    except Exception:
+        pass
+    curve_reset = curve_idx.reset_index()
+    if curve_reset.columns[0] != "Date":
+        curve_reset = curve_reset.rename(columns={curve_reset.columns[0]: "Date"})
+
+    # คอลัมน์หลักที่ต้องใช้
+    cols = [c for c in ["NAV", "Cash", "MV"] if c in curve_reset.columns]
+    if not cols:
+        st.warning("ไม่พบคอลัมน์สำหรับพล็อต (NAV/Cash/MV)")
+    else:
+        # ให้เป็นตัวเลข และตัด NaN ทั้งหมดออกก่อนพล็อต
+        for c in cols:
+            curve_reset[c] = pd.to_numeric(curve_reset[c], errors="coerce")
+        plot_df = curve_reset.dropna(subset=cols, how="all").copy()
+
+        if plot_df.empty:
+            st.info("ข้อมูลเส้นว่างเปล่า (NaN ทั้งหมด) — อัปเดตราคา/ธุรกรรมให้ครบก่อน")
+        else:
+            # === เพิ่มคอลัมน์ Portfolio Growth (%) ===
+            try:
+                # เงินต้นก้อนแรก = NAV แถวแรกที่ไม่ใช่ NaN
+                initial_capital = curve_idx["NAV"].dropna().iloc[0]
+            except Exception:
+                initial_capital = None
+
+            if initial_capital and initial_capital != 0:
+                plot_df["GrowthPct"] = (plot_df["NAV"] / float(initial_capital) - 1.0) * 100.0
+            else:
+                plot_df["GrowthPct"] = pd.NA  # ไม่มีเงินต้นให้คำนวณ
+
+            # ========= พล็อตด้วยแกนคู่ =========
+            from plotly.subplots import make_subplots
+            import plotly.graph_objects as go
+
+            fig = make_subplots(specs=[[{"secondary_y": True}]])
+            # เส้นหลักซ้าย: NAV / Cash / MV (เฉพาะคอลัมน์ที่มีจริง)
+            for c in cols:
+                if c in plot_df.columns and plot_df[c].notna().any():
+                    fig.add_trace(
+                        go.Scatter(
+                            x=plot_df["Date"],
+                            y=plot_df[c],
+                            mode="lines",
+                            name=c
+                        ),
+                        secondary_y=False
+                    )
+
+            # เส้นขวา: Portfolio Growth (%)
+            if plot_df["GrowthPct"].notna().any():
+                fig.add_trace(
+                    go.Scatter(
+                        x=plot_df["Date"],
+                        y=plot_df["GrowthPct"],
+                        mode="lines",
+                        name="Growth (%)",
+                        line=dict(dash="dash")
+                    ),
+                    secondary_y=True
+                )
+
+            # จัด labeling
+            fig.update_layout(title_text="NAV / Cash / MV + Portfolio Growth (%)")
+            fig.update_xaxes(title_text="Date")
+            fig.update_yaxes(title_text="Value (฿)", secondary_y=False)
+            fig.update_yaxes(title_text="Growth (%)", secondary_y=True)
+
+            st.plotly_chart(fig, use_container_width=True)
+
+            with st.expander("ตารางข้อมูล (ท้าย 10 แถว)"):
+                cols_show = [c for c in ["NAV", "Cash", "MV", "GrowthPct"] if c in plot_df.columns]
+                st.dataframe(plot_df[["Date"] + cols_show].tail(10))
+
 
 # --------- Allocation Pie + Holdings ---------
 st.subheader("🧩 สัดส่วนพอร์ต (Allocation) และรายการถือครอง (Holdings)")
