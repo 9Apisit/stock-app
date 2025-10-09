@@ -54,42 +54,78 @@ with st.sidebar:
 # ---------------- Helper: ดึงราคาแบบยืดหยุ่น ----------------
 @st.cache_data(show_spinner=False)
 def fetch_yf(tk: str, start_d: date, end_d: date):
-    """ดึง OHLCV จาก yfinance (auto_adjust=True)"""
-    df = yf.download(tk, start=start_d, end=end_d, auto_adjust=True, progress=False)
-    return df if df is not None else pd.DataFrame()
+    df = yf.download(
+        tk,
+        start=start_d, end=end_d,
+        auto_adjust=True, progress=False,
+        group_by="column",   # << ป้องกัน MultiIndex columns เช่น ('Close','AAPL')
+    )
+    if df is None or getattr(df, "empty", True):
+        return pd.DataFrame()
+    return df
 
+def _flatten_ohlc_columns(df: pd.DataFrame) -> pd.DataFrame:
+    out = df.copy()
+    if isinstance(out.columns, pd.MultiIndex):
+        out.columns = [str(t[0]).title() for t in out.columns]  # ('Close','AAPL')->'Close'
+    else:
+        out.columns = [str(c).title() for c in out.columns]
+    return out
+
+def _ensure_date_and_close(df: pd.DataFrame) -> pd.DataFrame:
+    out = _flatten_ohlc_columns(df).reset_index()
+    if "Date" not in out.columns and "Datetime" in out.columns:
+        out.rename(columns={"Datetime": "Date"}, inplace=True)
+    if "Date" not in out.columns:
+        out.rename(columns={out.columns[0]: "Date"}, inplace=True)  # ยอมให้คอลัมน์แรกเป็น Date
+
+    out["Date"] = pd.to_datetime(out["Date"], errors="coerce")
+    try: out["Date"] = out["Date"].dt.tz_localize(None)
+    except Exception: pass
+    out = out[out["Date"].notna()]
+
+    if "Close" not in out.columns:
+        for cand in ["Adj Close", "Adj_Close", "Price"]:
+            if cand in out.columns:
+                out.rename(columns={cand: "Close"}, inplace=True); break
+
+    # ถ้า Close ซ้ำจนเป็น DataFrame ให้บีบเหลือ 1 คอลัมน์
+    if "Close" in out.columns and isinstance(out["Close"], pd.DataFrame):
+        out["Close"] = out["Close"].iloc[:, 0]
+
+    if "Close" in out.columns:
+        out["Close"] = pd.to_numeric(out["Close"], errors="coerce")
+        out = out[out["Close"].notna()]
+    return out
 
 def get_close_series(symbol: str, start_d: Optional[date] = None, end_d: Optional[date] = None) -> pd.Series:
-    """ดึงราคาจาก DB หรือ yfinance คืนค่าเป็น Series ของ Close"""
+    # 1) จาก DB ก่อน
     df = load_prices_df(symbol)
-    if df is not None and not df.empty:
+    if df is not None and not df.empty and {"Date","Close"}.issubset(df.columns):
         s = df.copy()
-        if "Date" in s.columns:
-            s["Date"] = pd.to_datetime(s["Date"], errors="coerce")
-            s = s.dropna(subset=["Date"]).sort_values("Date")
-            if start_d:
-                s = s[s["Date"] >= pd.to_datetime(start_d)]
-            if end_d:
-                s = s[s["Date"] <= pd.to_datetime(end_d)]
-            s = s.set_index("Date")
-            if "Close" in s.columns:
-                return pd.to_numeric(s["Close"], errors="coerce").dropna().astype(float)
+        s["Date"] = pd.to_datetime(s["Date"], errors="coerce")
+        s = s.dropna(subset=["Date"]).sort_values("Date")
+        if start_d: s = s[s["Date"] >= pd.to_datetime(start_d)]
+        if end_d:   s = s[s["Date"] <= pd.to_datetime(end_d)]
+        s = s.set_index("Date")
+        return pd.to_numeric(s["Close"], errors="coerce").dropna().astype(float)
 
-    # ถ้าใน DB ไม่มี → ดึงจาก yfinance แล้ว upsert เฉพาะ Close
-    yf_df = fetch_yf(symbol, start, end)
-    if yf_df is not None and not yf_df.empty:
-        y2 = yf_df.reset_index()
-        date_col = "Date" if "Date" in y2.columns else ("Datetime" if "Datetime" in y2.columns else None)
-        if date_col and "Close" in y2.columns:
-            y2 = y2[[date_col, "Close"]].rename(columns={date_col: "Date"})
-            y2["Date"] = pd.to_datetime(y2["Date"], errors="coerce")
-            y2 = y2.dropna(subset=["Date"])  # เอาเฉพาะวันที่ valid
-            y2["Close"] = pd.to_numeric(y2["Close"], errors="coerce")
-            y2 = y2.dropna(subset=["Close"])  # เอาเฉพาะราคาที่เป็นตัวเลข
-            upsert_prices(symbol, y2[["Date", "Close"]])  # เก็บ cache ลง DB (เฉพาะ Close)
-            return y2.set_index("Date")["Close"].astype(float)
+    # 2) จาก yfinance (ใช้พารามิเตอร์ที่รับมา)
+    start_q = start_d or (date.today() - timedelta(days=365))
+    end_q   = end_d   or date.today()
+    yf_df = fetch_yf(symbol, start_q, end_q)
+    if yf_df is None or yf_df.empty:
+        return pd.Series(dtype="float64")
 
-    return pd.Series(dtype="float64")
+    y2 = _ensure_date_and_close(yf_df)
+    if y2.empty or "Close" not in y2.columns:
+        return pd.Series(dtype="float64")
+
+    if start_d: y2 = y2[y2["Date"] >= pd.to_datetime(start_d)]
+    if end_d:   y2 = y2[y2["Date"] <= pd.to_datetime(end_d)]
+
+    upsert_prices(symbol, y2[["Date", "Close"]])
+    return y2.set_index("Date")["Close"].astype(float)
 
 # ---------------- Tabs ----------------
 tab_pred, tab_reco, tab_ens = st.tabs([
@@ -431,4 +467,3 @@ with tab_ens:
 # - ค่าทำนายเป็นการสาธิตเชิงการศึกษา ไม่ใช่คำแนะนำการลงทุน
 # """
 #     )
-
